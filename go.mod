@@ -1,4 +1,4 @@
-module judb
+module  github.com/jsuserapp/judb
 
 go 1.24.2
 
