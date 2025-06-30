@@ -14,6 +14,16 @@ type Db struct {
 	db *sql.DB
 }
 
+var errSkip = 1
+
+// SetErrorSkip 设置错误信息输出的栈层次，默认是 1，在调用者位置，0 在库的位置
+func SetErrorSkip(skip int) {
+	if skip < 0 {
+		return
+	}
+	errSkip = skip
+}
+
 // Open 和 Close 函数没有处理异步的情况，也就是它不支持并发
 // 当然，一般这两个函数在初始化和结束时调用后，不会频繁调用。
 func (db *Db) Open(driverName, dataSourceName string) bool {
@@ -22,7 +32,7 @@ func (db *Db) Open(driverName, dataSourceName string) bool {
 	}
 	d, err := sql.Open(driverName, dataSourceName)
 	db.db = d
-	return ju.CheckSuccess(err)
+	return !ju.CheckTrace(err, errSkip)
 }
 
 // OpenSqlite3 支持多线程写入, 这会稍微降低性能, 但是大多数场景很难避免多线程写入, 如果不启用这个特性,
@@ -34,7 +44,7 @@ func (db *Db) OpenSqlite3(dbname string) bool {
 	}
 	d, err := sql.Open("sqlite3", "file:"+dbname+"?_mutex=full&_journal_mode=WAL")
 	db.db = d
-	return ju.CheckSuccess(err)
+	return !ju.CheckTrace(err, errSkip)
 }
 func (db *Db) OpenMysql(host, dbname, user, pass string) bool {
 	if db.db != nil {
@@ -42,7 +52,7 @@ func (db *Db) OpenMysql(host, dbname, user, pass string) bool {
 	}
 	d, err := sql.Open("mysql", user+":"+pass+"@tcp("+host+")/"+dbname+"?charset=utf8")
 	db.db = d
-	return ju.CheckSuccess(err)
+	return !ju.CheckTrace(err, errSkip)
 }
 
 // OpenPostgreSQL 打开 PostgreSQL 数据库, 这里只提供了基本参数
@@ -61,7 +71,7 @@ func (db *Db) OpenPostgreSQL(host, port, dbname, user, pass string) bool {
 		ju.CheckError(er)
 	}
 	db.db = d
-	return ju.CheckSuccess(err)
+	return !ju.CheckTrace(err, errSkip)
 }
 func (db *Db) Close() {
 	if db.db != nil {
@@ -75,10 +85,17 @@ type SqlResult struct {
 	Error  string
 }
 
-func (mr *SqlResult) Failure() bool {
+func NewSqlResult(err error) (rst SqlResult) {
+	rst.SetError(err)
+	return
+}
+func (mr *SqlResult) Fail() bool {
 	return mr.Error != ""
 }
 func (mr *SqlResult) SetError(err error) {
+	if err == nil {
+		return
+	}
 	var mysqlErr *mysql.MySQLError
 	if errors.As(err, &mysqlErr) {
 		mr.Code = fmt.Sprintf("%d", mysqlErr.Number)
@@ -108,11 +125,11 @@ func (db *Db) Query(sqlCase string, qc QueryCall, v ...interface{}) SqlResult {
 	if db.db == nil {
 		mr.Code = "-1"
 		mr.Error = "数据库对象不可用 nil"
-		ju.OutputColor(1, "red", mr.Error)
+		ju.OutputColor(errSkip, "red", mr.Error)
 		return mr
 	}
 	rows, err := db.db.Query(sqlCase, v...)
-	if ju.CheckTrace(err, 1) {
+	if ju.CheckTrace(err, errSkip) {
 		mr.SetError(err)
 	} else {
 		qc(rows)
@@ -120,16 +137,19 @@ func (db *Db) Query(sqlCase string, qc QueryCall, v ...interface{}) SqlResult {
 	}
 	return mr
 }
+func (db *Db) QueryRow(sqlCase string, v ...interface{}) *sql.Row {
+	return db.db.QueryRow(sqlCase, v...)
+}
 func (db *Db) Exec(sqlCase string, v ...interface{}) SqlResult {
 	var mr SqlResult
 	if db.db == nil {
 		mr.Code = "-1"
 		mr.Error = "数据库对象为 nil"
-		ju.OutputColor(1, "red", mr.Error)
+		ju.OutputColor(errSkip, "red", mr.Error)
 		return mr
 	}
 	rst, err := db.db.Exec(sqlCase, v...)
-	if ju.CheckTrace(err, 1) {
+	if ju.CheckTrace(err, errSkip) {
 		mr.SetError(err)
 	} else {
 		mr.Result = rst
@@ -139,7 +159,7 @@ func (db *Db) Exec(sqlCase string, v ...interface{}) SqlResult {
 func (db *Db) Begin() (*sql.Tx, SqlResult) {
 	var mr SqlResult
 	tx, err := db.db.Begin()
-	if ju.CheckTrace(err, 1) {
+	if ju.CheckTrace(err, errSkip) {
 		mr.SetError(err)
 		return nil, mr
 	}

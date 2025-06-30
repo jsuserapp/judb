@@ -3,7 +3,7 @@ package main
 import (
 	"database/sql"
 	"github.com/jsuserapp/ju"
-	"judb"
+	"github.com/jsuserapp/judb"
 )
 
 func main() {
