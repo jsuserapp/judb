@@ -46,7 +46,7 @@ func testPostgreSSLRoot() {
 }
 func testMysql() {
 	var db judb.Db
-	if db.OpenMysql("127.0.0.1:3308", "tool", "tool", "IJ/XpB6L3zUl+p3hepyTyJFERnQ4ZQKz") {
+	if db.OpenMysql("127.0.0.1", "3308", "tool", "tool", "IJ/XpB6L3zUl+p3hepyTyJFERnQ4ZQKz") {
 		judb.SetLogDb(judb.LogDbTypeMysql, db.GetDb(), true)
 		judb.SetLogLimit("", -1)
 	}

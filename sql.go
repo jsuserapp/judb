@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsuserapp/ju"
 	"github.com/lib/pq"
 	"github.com/mattn/go-sqlite3"
 	"os"
+	"strconv"
+	"time"
 )
 
 type Db struct {
@@ -27,42 +31,27 @@ func SetErrorSkip(skip int) {
 	errSkip = skip
 }
 
-// Open 和 Close 函数没有处理异步的情况，也就是它不支持并发
-// 当然，一般这两个函数在初始化和结束时调用后，不会频繁调用。
-func (db *Db) Open(driverName, dataSourceName string) bool {
-	if db.db != nil {
-		return true
-	}
-	d, err := sql.Open(driverName, dataSourceName)
-	db.db = d
-	return !ju.LogErrorTrace(err, errSkip)
-}
-
 // OpenSqlite3 支持多线程写入, 这会稍微降低性能, 但是大多数场景很难避免多线程写入, 如果不启用这个特性,
 // 写入时候有概率触发表被锁定提示.
+//
 // dbname: example ./data/log.db
-func (db *Db) OpenSqlite3(dbname string) bool {
+//
+// params: 如果不需要修改参数，可以设置为空串，此时它的值是 _mutex=full&_journal_mode=WAL
+func (db *Db) OpenSqlite3(dbname, params string) bool {
 	if db.db != nil {
 		return true
 	}
-	d, err := sql.Open("sqlite3", "file:"+dbname+"?_mutex=full&_journal_mode=WAL")
-	db.db = d
-	return !ju.LogErrorTrace(err, errSkip)
-}
-func (db *Db) OpenMysql(host, port, dbname, user, pass string) bool {
-	if db.db != nil {
-		return true
+	if params == "" {
+		params = "_mutex=full&_journal_mode=WAL"
 	}
-	d, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8", user, pass, host, port, dbname))
+	d, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?%s", dbname, params))
 	db.db = d
 	return !ju.LogErrorTrace(err, errSkip)
 }
 
-func (db *Db) OpenMysqlSSL(host, port, database, user, password, clientKeyPath, clientCertPath, caCertPath string) (rst bool) {
-	// --- 2. 创建自定义的 TLS 配置 ---
-	// 定义一个独一无二的名字，用于在 DSN 中引用这个配置
-	tlsConfigName := "judb-tls-config"
-
+// MakeTLSConfig Mysql 使用证书的方式和 PostgreSQL 不太一样，需要单独注册
+// 另外，如果有多个连接，需要注册不同的名字："judb-tls-config1"，"judb-tls-config2"
+func MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, serverName string) (cfg *tls.Config) {
 	// 加载 CA 根证书
 	rootCAPool := x509.NewCertPool()
 	caCert, err := os.ReadFile(caCertPath)
@@ -83,105 +72,120 @@ func (db *Db) OpenMysqlSSL(host, port, database, user, password, clientKeyPath, 
 	}
 
 	// 创建 tls.Config
-	tlsConfig := &tls.Config{
+	cfg = &tls.Config{
 		// RootCAs 用于验证服务器证书的颁发机构
 		RootCAs: rootCAPool,
 		// Certificates 是我们的客户端证书，用于向服务器证明自己的身份
 		Certificates: []tls.Certificate{clientCerts},
 		// ServerName 如果设置，会用于验证服务器证书上的主机名 (CN/SAN)。
 		// 最好设置为你的数据库服务器域名。
-		// ServerName: "your.mysql.server.com",
+		ServerName: serverName,
 	}
-
-	// --- 3. 向 MySQL 驱动注册这个 TLS 配置 ---
-	// 这是最关键的一步！
-	err = mysql.RegisterTLSConfig(tlsConfigName, tlsConfig)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("注册自定义 TLS 配置失败: %v", err))
-		return
-	}
-
-	// --- 4. 构建数据库连接字符串 (DSN) ---
-	// 格式: user:password@tcp(host:port)/dbname?tls=your_config_name
-	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%s)/%s?tls=%s",
-		user,
-		password,
-		host,
-		port,
-		database,
-		tlsConfigName, // 在这里使用我们注册的 TLS 配置名
-	)
-
-	// --- 5. 打开数据库连接并测试 ---
-	d, err := sql.Open("mysql", dsn)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("打开数据库连接失败: %v", err))
-		return
-	}
-	db.db = d
-
-	return true
+	return cfg
 }
-func (db *Db) OpenPostgreSSL(host, port, database, user, password, clientKeyPath, clientCertPath, caCertPath string) (rst bool) {
-	// --- 2. 创建自定义的 TLS 配置 ---
-	// 定义一个独一无二的名字，用于在 DSN 中引用这个配置
-	tlsConfigName := "judb-tls-config"
 
-	// 加载 CA 根证书
-	rootCAPool := x509.NewCertPool()
-	caCert, err := os.ReadFile(caCertPath)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("无法读取 CA 证书文件: %v", err))
-		return
+// MakeMysqlConfig 这个函数是为了简化 Config 的构造
+func MakeMysqlConfig(host, port, dbname, user, pass string) *mysql.Config {
+	cfg := &mysql.Config{
+		Net:    "tcp",
+		User:   user,
+		Passwd: pass,
+		DBName: dbname,
+		Addr:   fmt.Sprintf("%s:%s", host, port),
 	}
-	if ok := rootCAPool.AppendCertsFromPEM(caCert); !ok {
-		ju.LogRed("添加 CA 证书到证书池失败")
-		return
-	}
+	return cfg
+}
 
-	// 加载客户端证书和私钥
-	clientCerts, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("无法加载客户端证书或密钥: %v", err))
-		return
+// MakeMysqlSSLConfig 如果 TLS 注册失败，函数会返回 nil，这个函数是为了简化 Config 的构造
+// tlsName 如果是多连接需要不同名称，否则会产生冲突，单联接时可以传入空串，相当于使用默认名称 "judb-tls-config"
+func MakeMysqlSSLConfig(host, port, dbname, user, pass, tlsName, clientKeyPath, clientCertPath, caCertPath string) *mysql.Config {
+	if tlsName == "" {
+		tlsName = "judb-tls-config"
 	}
-
-	// 创建 tls.Config
-	tlsConfig := &tls.Config{
-		// RootCAs 用于验证服务器证书的颁发机构
-		RootCAs: rootCAPool,
-		// Certificates 是我们的客户端证书，用于向服务器证明自己的身份
-		Certificates: []tls.Certificate{clientCerts},
-		// ServerName 如果设置，会用于验证服务器证书上的主机名 (CN/SAN)。
-		// 最好设置为你的数据库服务器域名。
-		// ServerName: "your.mysql.server.com",
-	}
-
-	// --- 3. 向 MySQL 驱动注册这个 TLS 配置 ---
-	// 这是最关键的一步！
-	err = mysql.RegisterTLSConfig(tlsConfigName, tlsConfig)
+	tlsCfg := MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, host)
+	err := mysql.RegisterTLSConfig(tlsName, tlsCfg)
 	if ju.LogFail(err) {
 		ju.LogRed(fmt.Sprintf("注册自定义 TLS 配置失败: %v", err))
-		return
+		return nil
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s sslrootcert=%s sslcert=%s sslkey=%s",
-		host,
-		port,
-		user, // 这个用户名需要和客户端证书的CN匹配
-		password,
-		database,
-		"verify-full",
-		caCertPath,
-		clientCertPath,
-		clientKeyPath,
-	)
+	cfg := &mysql.Config{
+		Net:    "tcp",
+		User:   user,
+		Passwd: pass,
+		DBName: dbname,
+		Addr:   fmt.Sprintf("%s:%s", host, port),
+		Loc:    time.UTC,
+		Params: map[string]string{
+			"tls": tlsName,
+		},
+	}
+	return cfg
+}
+func (db *Db) OpenMysql(cfg *mysql.Config) bool {
+	if db.db != nil {
+		return true
+	}
+	d, err := sql.Open("mysql", cfg.FormatDSN())
+	db.db = d
+	return !ju.LogErrorTrace(err, errSkip)
+}
 
-	d, err := sql.Open("postgres", dsn)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("打开数据库连接失败: %v", err))
-		return
+func MakePostgresConfig(host, port, database, user, password string) *pgxpool.Config {
+	config, err := pgxpool.ParseConfig("")
+	if err != nil {
+		return nil
+	}
+
+	iPort, _ := strconv.Atoi(port)
+	if iPort == 0 {
+		return nil
+	}
+	config.ConnConfig.Host = host
+	config.ConnConfig.Port = uint16(iPort)
+	config.ConnConfig.User = user
+	config.ConnConfig.Password = password
+	config.ConnConfig.Database = database
+	if config.ConnConfig.RuntimeParams == nil {
+		config.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	config.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	config.ConnConfig.RuntimeParams["client_encoding"] = "UTF8"
+
+	return config
+}
+func MakePostgresSSLConfig(host, port, database, user, password, clientKeyPath, clientCertPath, caCertPath string) *pgxpool.Config {
+	config, err := pgxpool.ParseConfig("")
+	if err != nil {
+		return nil
+	}
+
+	iPort, _ := strconv.Atoi(port)
+	if iPort == 0 {
+		return nil
+	}
+	tlsCfg := MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, host)
+	if tlsCfg == nil {
+		return nil
+	}
+	config.ConnConfig.Host = host
+	config.ConnConfig.Port = uint16(iPort)
+	config.ConnConfig.User = user
+	config.ConnConfig.Password = password
+	config.ConnConfig.Database = database
+	config.ConnConfig.TLSConfig = tlsCfg
+	if config.ConnConfig.RuntimeParams == nil {
+		config.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	config.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	config.ConnConfig.RuntimeParams["client_encoding"] = "UTF8"
+
+	return config
+}
+func (db *Db) OpenPostgres(cfg *pgxpool.Config) bool {
+	d := stdlib.OpenDB(*cfg.ConnConfig)
+	if d == nil {
+		return false
 	}
 	db.db = d
 	return true
@@ -202,25 +206,6 @@ func (db *Db) OutputConnectInfo() {
 		return
 	}
 	ju.LogGreen(fmt.Sprintf("PostgreSQL 版本: %s\n", version))
-}
-
-// OpenPostgreSQL 打开 PostgreSQL 数据库, 这里只提供了基本参数
-func (db *Db) OpenPostgreSQL(host, port, dbname, user, pass string) bool {
-	if db.db != nil {
-		return true
-	}
-	if port == "" {
-		port = "5432"
-	}
-	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
-		host, port, user, pass, dbname)
-	d, err := sql.Open("postgres", psqlInfo)
-	if err == nil {
-		_, er := d.Exec("SET client_encoding = 'UTF8';")
-		ju.LogError(er)
-	}
-	db.db = d
-	return !ju.LogErrorTrace(err, errSkip)
 }
 func (db *Db) Close() {
 	if db.db != nil {
