@@ -7,13 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-sql-driver/mysql"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsuserapp/ju"
+	"github.com/jsuserapp/judb/postgres"
 	"github.com/lib/pq"
 	"github.com/mattn/go-sqlite3"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -55,8 +54,8 @@ func MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, serverName string)
 	// 加载 CA 根证书
 	rootCAPool := x509.NewCertPool()
 	caCert, err := os.ReadFile(caCertPath)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("无法读取 CA 证书文件: %v", err))
+	if ju.OutputErrorTrace(err, 1) {
+		//ju.LogRed(fmt.Sprintf("无法读取 CA 证书文件: %v", err))
 		return
 	}
 	if ok := rootCAPool.AppendCertsFromPEM(caCert); !ok {
@@ -66,8 +65,8 @@ func MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, serverName string)
 
 	// 加载客户端证书和私钥
 	clientCerts, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
-	if ju.LogFail(err) {
-		ju.LogRed(fmt.Sprintf("无法加载客户端证书或密钥: %v", err))
+	if ju.OutputErrorTrace(err, 1) {
+		//ju.LogRed(fmt.Sprintf("无法加载客户端证书或密钥: %v", err))
 		return
 	}
 
@@ -131,79 +130,30 @@ func (db *Db) OpenMysql(cfg *mysql.Config) bool {
 	return !ju.LogErrorTrace(err, errSkip)
 }
 
-func MakePostgresConfig(host, port, database, user, password string) *pgxpool.Config {
-	config, err := pgxpool.ParseConfig("")
-	if err != nil {
-		return nil
-	}
-
-	iPort, _ := strconv.Atoi(port)
-	if iPort == 0 {
-		return nil
-	}
-	config.ConnConfig.Host = host
-	config.ConnConfig.Port = uint16(iPort)
-	config.ConnConfig.User = user
-	config.ConnConfig.Password = password
-	config.ConnConfig.Database = database
-	if config.ConnConfig.RuntimeParams == nil {
-		config.ConnConfig.RuntimeParams = make(map[string]string)
-	}
-	config.ConnConfig.RuntimeParams["timezone"] = "UTC"
-	config.ConnConfig.RuntimeParams["client_encoding"] = "UTF8"
-
-	return config
+type name struct {
 }
-func MakePostgresSSLConfig(host, port, database, user, password, clientKeyPath, clientCertPath, caCertPath string) *pgxpool.Config {
-	config, err := pgxpool.ParseConfig("")
-	if err != nil {
-		return nil
-	}
 
-	iPort, _ := strconv.Atoi(port)
-	if iPort == 0 {
-		return nil
-	}
-	tlsCfg := MakeTLSConfig(clientKeyPath, clientCertPath, caCertPath, host)
-	if tlsCfg == nil {
-		return nil
-	}
-	config.ConnConfig.Host = host
-	config.ConnConfig.Port = uint16(iPort)
-	config.ConnConfig.User = user
-	config.ConnConfig.Password = password
-	config.ConnConfig.Database = database
-	config.ConnConfig.TLSConfig = tlsCfg
-	if config.ConnConfig.RuntimeParams == nil {
-		config.ConnConfig.RuntimeParams = make(map[string]string)
-	}
-	config.ConnConfig.RuntimeParams["timezone"] = "UTC"
-	config.ConnConfig.RuntimeParams["client_encoding"] = "UTF8"
-
-	return config
-}
-func (db *Db) OpenPostgres(cfg *pgxpool.Config) bool {
-	d := stdlib.OpenDB(*cfg.ConnConfig)
-	if d == nil {
-		return false
-	}
+func (db *Db) OpenPostgres(cfg *postgres.Config) bool {
+	dsn := cfg.FormatDSN()
+	d, err := sql.Open("pgx", dsn)
 	db.db = d
-	return true
+	return !ju.LogErrorTrace(err, errSkip)
 }
-func (db *Db) OutputConnectInfo() {
+func (db *Db) OutputConnectInfo() bool {
 	// sql.Open 不会立即建立连接，Ping() 会
 	err := db.db.Ping()
 	if ju.LogErrorTrace(err, 1) {
-		return
+		return false
 	}
 
 	// 现在可以执行查询了
 	var version string
 	err = db.QueryRow("SELECT VERSION()").Scan(&version)
 	if ju.LogErrorTrace(err, 1) {
-		return
+		return false
 	}
-	ju.OutputColor(1, "green", fmt.Sprintf("PostgreSQL 版本: %s\n", version))
+	ju.OutputColor(1, "green", version)
+	return true
 }
 func (db *Db) Close() {
 	if db.db != nil {
