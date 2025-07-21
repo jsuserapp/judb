@@ -203,7 +203,7 @@ func (db *Db) OutputConnectInfo() {
 	if ju.LogErrorTrace(err, 1) {
 		return
 	}
-	ju.LogGreen(fmt.Sprintf("PostgreSQL 版本: %s\n", version))
+	ju.OutputColor(1, "green", fmt.Sprintf("PostgreSQL 版本: %s\n", version))
 }
 func (db *Db) Close() {
 	if db.db != nil {
