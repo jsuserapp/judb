@@ -6,14 +6,21 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsuserapp/ju"
 	"github.com/jsuserapp/judb/postgres"
 	"github.com/lib/pq"
 	"github.com/mattn/go-sqlite3"
-	"os"
-	"time"
+)
+
+const (
+	DatabaseTypeMysql    = "mysql"
+	DatabaseTypeSqlite   = "sqlite"
+	DatabaseTypePostgres = "postgres"
 )
 
 type Db struct {
@@ -33,17 +40,17 @@ func SetErrorSkip(skip int) {
 // OpenSqlite3 支持多线程写入, 这会稍微降低性能, 但是大多数场景很难避免多线程写入, 如果不启用这个特性,
 // 写入时候有概率触发表被锁定提示.
 //
-// dbname: example ./data/log.db
+// dbpath: example ./data/log.db
 //
 // params: 如果不需要修改参数，可以设置为空串，此时它的值是 _mutex=full&_journal_mode=WAL
-func (db *Db) OpenSqlite3(dbname, params string) bool {
+func (db *Db) OpenSqlite3(dbpath, params string) bool {
 	if db.db != nil {
 		return true
 	}
 	if params == "" {
 		params = "_mutex=full&_journal_mode=WAL"
 	}
-	d, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?%s", dbname, params))
+	d, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?%s", dbpath, params))
 	db.db = d
 	return !ju.LogErrorTrace(err, errSkip)
 }
@@ -139,20 +146,30 @@ func (db *Db) OpenPostgres(cfg *postgres.Config) bool {
 	db.db = d
 	return !ju.LogErrorTrace(err, errSkip)
 }
-func (db *Db) OutputConnectInfo() bool {
+func (db *Db) OutputConnectInfo(dbType string) bool {
 	// sql.Open 不会立即建立连接，Ping() 会
 	err := db.db.Ping()
 	if ju.LogErrorTrace(err, 1) {
 		return false
 	}
 
+	sqlCase := "SELECT VERSION()"
+	if dbType == DatabaseTypeSqlite {
+		sqlCase = "SELECT sqlite_version()"
+	}
 	// 现在可以执行查询了
 	var version string
-	err = db.QueryRow("SELECT VERSION()").Scan(&version)
+	err = db.QueryRow(sqlCase).Scan(&version)
 	if ju.LogErrorTrace(err, 1) {
 		return false
 	}
-	ju.OutputColor(1, "green", version)
+	if dbType == DatabaseTypeSqlite {
+		ju.OutputColor(1, "green", fmt.Sprintf("SQLite Version %s", version))
+	} else if dbType == DatabaseTypeMysql {
+		ju.OutputColor(1, "green", fmt.Sprintf("MySQL Version %s", version))
+	} else {
+		ju.OutputColor(1, "green", version)
+	}
 	return true
 }
 func (db *Db) Close() {

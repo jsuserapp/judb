@@ -3,12 +3,13 @@ package judb
 import (
 	"database/sql"
 	"fmt"
-	"github.com/jsuserapp/ju"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jsuserapp/ju"
 )
 
 //日志存储的数据库相关操作
@@ -50,7 +51,7 @@ func init() {
 
 // SetLogDb 设置 Log 保存到数据库的方式
 //
-// dbType string: 数据库类型, 目前支持 sqlite 和 mysql 两个值
+// dbType string: 数据库类型, 目前支持 sqlite, mysql 和 postgresql 3 个值
 //
 // db *DB: 数据库, 支持 MySql 和 SQLite3, 如果这个值是 nil, 则相当于取消日志系统绑定的数据库
 //

@@ -2,9 +2,10 @@ package judb
 
 import (
 	"fmt"
-	"github.com/jsuserapp/ju"
 	"strings"
 	"sync"
+
+	"github.com/jsuserapp/ju"
 )
 
 var _logMutex sync.Mutex
