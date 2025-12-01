@@ -24,7 +24,8 @@ const (
 )
 
 type Db struct {
-	db *sql.DB
+	dbType string
+	db     *sql.DB
 }
 
 var errSkip = 1
@@ -52,6 +53,7 @@ func (db *Db) OpenSqlite3(dbpath, params string) bool {
 	}
 	d, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?%s", dbpath, params))
 	db.db = d
+	db.dbType = DatabaseTypeSqlite
 	return !ju.LogErrorTrace(err, errSkip)
 }
 
@@ -134,6 +136,7 @@ func (db *Db) OpenMysql(cfg *mysql.Config) bool {
 	}
 	d, err := sql.Open("mysql", cfg.FormatDSN())
 	db.db = d
+	db.dbType = DatabaseTypeMysql
 	return !ju.LogErrorTrace(err, errSkip)
 }
 
@@ -144,9 +147,10 @@ func (db *Db) OpenPostgres(cfg *postgres.Config) bool {
 	dsn := cfg.FormatDSN()
 	d, err := sql.Open("pgx", dsn)
 	db.db = d
+	db.dbType = DatabaseTypePostgres
 	return !ju.LogErrorTrace(err, errSkip)
 }
-func (db *Db) OutputConnectInfo(dbType string) bool {
+func (db *Db) OutputConnectInfo() bool {
 	// sql.Open 不会立即建立连接，Ping() 会
 	err := db.db.Ping()
 	if ju.LogErrorTrace(err, 1) {
@@ -154,7 +158,7 @@ func (db *Db) OutputConnectInfo(dbType string) bool {
 	}
 
 	sqlCase := "SELECT VERSION()"
-	if dbType == DatabaseTypeSqlite {
+	if db.dbType == DatabaseTypeSqlite {
 		sqlCase = "SELECT sqlite_version()"
 	}
 	// 现在可以执行查询了
@@ -163,11 +167,11 @@ func (db *Db) OutputConnectInfo(dbType string) bool {
 	if ju.LogErrorTrace(err, 1) {
 		return false
 	}
-	if dbType == DatabaseTypeSqlite {
+	if db.dbType == DatabaseTypeSqlite {
 		ju.OutputColor(1, "green", fmt.Sprintf("SQLite Version %s", version))
-	} else if dbType == DatabaseTypeMysql {
+	} else if db.dbType == DatabaseTypeMysql {
 		ju.OutputColor(1, "green", fmt.Sprintf("MySQL Version %s", version))
-	} else {
+	} else if db.dbType == DatabaseTypePostgres {
 		ju.OutputColor(1, "green", version)
 	}
 	return true
