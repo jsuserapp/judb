@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsuserapp/ju"
 	"github.com/jsuserapp/judb/postgres"
-	"github.com/lib/pq"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -199,14 +199,15 @@ func (mr *SqlResult) SetError(err error) {
 	if err == nil {
 		return
 	}
+	mr.Error = err.Error()
 	var mysqlErr *mysql.MySQLError
 	if errors.As(err, &mysqlErr) {
 		mr.Code = fmt.Sprintf("%d", mysqlErr.Number)
 		mr.Error = mysqlErr.Message
 	}
-	var pgErr *pq.Error
+	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		mr.Code = string(pgErr.Code)
+		mr.Code = pgErr.Code
 		mr.Error = pgErr.Message
 	}
 	var sqErr sqlite3.Error

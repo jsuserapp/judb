@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"fmt"
-	"github.com/jsuserapp/ju"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/jsuserapp/ju"
 )
 
 type Config struct {
